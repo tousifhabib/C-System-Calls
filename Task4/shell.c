@@ -23,6 +23,7 @@ void add_to_history(char *input);
 void display_history();
 void set_variable(char *input);
 void export_variable(char *input);
+void expand_variables(char **tokens);
 
 int main()
 {
@@ -65,6 +66,28 @@ void tokenize(char *input, char **tokens, const char *delimiter)
             inside_quotes = 1;
         }
 
+        // Handle ${variable} syntax
+        if (*input == '$' && *(input + 1) == '{')
+        {
+            input += 2;
+            char *closing_brace = strchr(input, '}');
+            if (closing_brace)
+            {
+                *closing_brace = '\0';
+                char *value = getenv(input);
+                if (value)
+                {
+                    tokens[index++] = value;
+                }
+                else
+                {
+                    tokens[index++] = "";
+                }
+                input = closing_brace + 1;
+                continue;
+            }
+        }
+
         tokens[index++] = input;
 
         if (inside_quotes)
@@ -101,6 +124,8 @@ void execute_command(char **tokens)
     if (tokens[0] == NULL)
         return;
 
+    expand_variables(tokens);
+
     if (strcmp(tokens[0], "history") == 0)
     {
         display_history();
@@ -109,9 +134,9 @@ void execute_command(char **tokens)
     {
         set_variable(tokens[0]);
     }
-    else if (strncmp(tokens[0], "export", 6) == 0)
+    else if (strcmp(tokens[0], "export") == 0)
     {
-        export_variable(tokens[0]);
+        export_variable(tokens[1]);
     }
     else
     {
@@ -211,17 +236,37 @@ void set_variable(char *input)
 
 void export_variable(char *input)
 {
-    char *name = strtok(input + 7, " "); // Skip 'export ' in the input
-    if (name)
+    if (input)
     {
-        char *value = getenv(name);
-        if (value)
+        char *name = strtok(input, "=");
+        char *value = strtok(NULL, "=");
+        if (name && value)
         {
             setenv(name, value, 1);
         }
         else
         {
-            printf("myshell: export: %s: not a valid identifier\n", name);
+            printf("myshell: export: %s: not a valid identifier\n", input);
+        }
+    }
+}
+
+void expand_variables(char **tokens)
+{
+    for (int i = 0; tokens[i] != NULL; i++)
+    {
+        if (tokens[i][0] == '$')
+        {
+            char *var_name = tokens[i] + 1;
+            char *value = getenv(var_name);
+            if (value != NULL)
+            {
+                tokens[i] = value;
+            }
+            else
+            {
+                tokens[i] = "";
+            }
         }
     }
 }
