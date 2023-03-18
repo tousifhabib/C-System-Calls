@@ -17,13 +17,12 @@ int history_count = 0;
 void tokenize(char *input, char **tokens, const char *delimiter);
 void execute_command(char **tokens);
 void pipe_handler(char **tokens);
-int handle_redirection(char **tokens);
+void handle_redirection(char **tokens);
 void handle_signal(int signum);
 void add_to_history(char *input);
 void display_history();
 void set_variable(char *input);
 void export_variable(char *input);
-void expand_variables(char **tokens);
 
 int main()
 {
@@ -52,69 +51,13 @@ int main()
 
 void tokenize(char *input, char **tokens, const char *delimiter)
 {
+    char *token;
     int index = 0;
-    int inside_quotes = 0;
-
-    while (*input != '\0')
+    token = strtok(input, delimiter);
+    while (token != NULL)
     {
-        while (*input == ' ' || *input == '\t' || *input == '\n')
-            *input++ = '\0';
-
-        if (*input == '\"')
-        {
-            input++;
-            inside_quotes = 1;
-        }
-
-        // Handle ${variable} syntax
-        if (*input == '$' && *(input + 1) == '{')
-        {
-            input += 2;
-            char *closing_brace = strchr(input, '}');
-            if (closing_brace)
-            {
-                *closing_brace = '\0';
-                char *value = getenv(input);
-                if (value)
-                {
-                    tokens[index++] = value;
-                }
-                else
-                {
-                    tokens[index++] = "";
-                }
-                input = closing_brace + 1;
-                continue;
-            }
-        }
-
-        tokens[index++] = input;
-
-        if (inside_quotes)
-        {
-            char *quote_pos = strchr(input, '\"');
-            if (quote_pos)
-            {
-                inside_quotes = 0;
-                *quote_pos = '\0';
-                input = quote_pos + 1;
-            }
-            else
-            {
-                input += strlen(input);
-            }
-        }
-        else
-        {
-            while (*input != '\0' && *input != ' ' && *input != '\t' && *input != '\n')
-                input++;
-
-            if (*input != '\0')
-            {
-                *input = '\0';
-                input++;
-            }
-        }
+        tokens[index++] = token;
+        token = strtok(NULL, delimiter);
     }
     tokens[index] = NULL;
 }
@@ -124,8 +67,6 @@ void execute_command(char **tokens)
     if (tokens[0] == NULL)
         return;
 
-    expand_variables(tokens);
-
     if (strcmp(tokens[0], "history") == 0)
     {
         display_history();
@@ -134,59 +75,13 @@ void execute_command(char **tokens)
     {
         set_variable(tokens[0]);
     }
-    else if (strcmp(tokens[0], "export") == 0)
+    else if (strncmp(tokens[0], "export", 6) == 0)
     {
-        export_variable(tokens[1]);
+        export_variable(tokens[0]);
     }
     else
     {
-        int pipe_found = 0;
-        for (int i = 0; tokens[i] != NULL; i++)
-        {
-            if (strcmp(tokens[i], "|") == 0)
-            {
-                pipe_found = 1;
-                break;
-            }
-        }
-
-        if (pipe_found)
-        {
-            pipe_handler(tokens);
-        }
-        else
-        {
-            int status;
-            pid_t pid = fork();
-
-            if (pid == 0)
-            {
-                if (!handle_redirection(tokens))
-                {
-                    if (execvp(tokens[0], tokens) < 0)
-                    {
-                        perror("myshell");
-                        exit(EXIT_FAILURE);
-                    }
-                }
-            }
-            else if (pid > 0)
-            {
-                waitpid(pid, &status, 0);
-                if (WIFEXITED(status))
-                {
-                    printf("Child exited with code %d\n", WEXITSTATUS(status));
-                }
-                else if (WIFSIGNALED(status))
-                {
-                    printf("Child terminated by signal %d\n", WTERMSIG(status));
-                }
-            }
-            else
-            {
-                perror("myshell");
-            }
-        }
+        pipe_handler(tokens);
     }
 }
 
@@ -236,157 +131,113 @@ void set_variable(char *input)
 
 void export_variable(char *input)
 {
-    if (input)
-    {
-        char *name = strtok(input, "=");
-        char *value = strtok(NULL, "=");
-        if (name && value)
-        {
-            setenv(name, value, 1);
-        }
-        else
-        {
-            printf("myshell: export: %s: not a valid identifier\n", input);
-        }
-    }
-}
-
-void expand_variables(char **tokens)
-{
-    for (int i = 0; tokens[i] != NULL; i++)
-    {
-        if (tokens[i][0] == '$')
-        {
-            char *var_name = tokens[i] + 1;
-            char *value = getenv(var_name);
-            if (value != NULL)
-            {
-                tokens[i] = value;
-            }
-            else
-            {
-                tokens[i] = "";
-            }
-        }
-    }
+    char *name = strtok(input, "=");
+    char *value = strtok(NULL, "=");
+    setenv(name, value, 1);
 }
 
 void pipe_handler(char **tokens)
 {
-    int num_pipes = 0;
-    for (int i = 0; tokens[i] != NULL; i++)
+    char *cmds[MAX_NUM_TOKENS][MAX_NUM_TOKENS];
+    int cmd_index = 0;
+    int i = 0;
+    while (tokens[i] != NULL)
     {
-        if (strcmp(tokens[i], "|") == 0)
+        int token_index = 0;
+        while (tokens[i] != NULL && strcmp(tokens[i], "|") != 0)
         {
-            num_pipes++;
+            cmds[cmd_index][token_index++] = tokens[i++];
         }
+        cmds[cmd_index][token_index] = NULL;
+        cmd_index++;
+        if (tokens[i] != NULL)
+            i++;
     }
+    cmds[cmd_index][0] = NULL;
 
-    int pipe_fds[2 * num_pipes];
+    int pipe_fds[2 * (cmd_index - 1)];
 
-    for (int i = 0; i < num_pipes; i++)
+    for (int j = 0; j < cmd_index - 1; j++)
     {
-        if (pipe(pipe_fds + i * 2) < 0)
+        if (pipe(pipe_fds + j * 2) < 0)
         {
             perror("myshell");
             exit(EXIT_FAILURE);
         }
     }
 
-    int tokens_index = 0;
-    int pipe_index = 0;
-
-    for (int i = 0; i < num_pipes + 1; i++)
+    for (int j = 0; j < cmd_index; j++)
     {
-        int start = tokens_index;
-        while (tokens[tokens_index] != NULL)
-        {
-            if (strcmp(tokens[tokens_index], "|") == 0)
-            {
-                tokens[tokens_index] = NULL;
-                break;
-            }
-            tokens_index++;
-        }
-
         pid_t pid = fork();
         if (pid == 0)
         {
-            if (i != 0)
+            if (j != 0)
             {
-                dup2(pipe_fds[2 * (pipe_index - 1)], STDIN_FILENO);
-            }
-            if (i != num_pipes)
-            {
-                dup2(pipe_fds[2 * pipe_index + 1], STDOUT_FILENO);
+                dup2(pipe_fds[(j - 1) * 2], STDIN_FILENO);
             }
 
-            for (int j = 0; j < 2 * num_pipes; j++)
+            if (j != cmd_index - 1)
             {
-                close(pipe_fds[j]);
+                dup2(pipe_fds[j * 2 + 1], STDOUT_FILENO);
             }
 
-            handle_redirection(tokens + start);
-            execvp(tokens[start], tokens + start);
-            perror("myshell");
-            exit(EXIT_FAILURE);
+            for (int k = 0; k < 2 * (cmd_index - 1); k++)
+            {
+                close(pipe_fds[k]);
+            }
+
+            handle_redirection(cmds[j]);
+            if (execvp(cmds[j][0], cmds[j]) < 0)
+            {
+                perror("myshell");
+                exit(EXIT_FAILURE);
+            }
         }
-
-        tokens_index++;
-        pipe_index++;
     }
 
-    for (int j = 0; j < 2 * num_pipes; j++)
+    for (int j = 0; j < 2 * (cmd_index - 1); j++)
     {
         close(pipe_fds[j]);
     }
 
-    for (int i = 0; i < num_pipes + 1; i++)
+    for (int j = 0; j < cmd_index; j++)
     {
         wait(NULL);
     }
 }
 
-
-int handle_redirection(char **tokens)
+void handle_redirection(char **tokens)
 {
-    int redirection_found = 0;
-    char *filtered_tokens[MAX_NUM_TOKENS];
-    int filtered_index = 0;
-
     for (int i = 0; tokens[i] != NULL; i++)
     {
         if (strcmp(tokens[i], ">") == 0 || strcmp(tokens[i], "2>") == 0)
         {
-            redirection_found = 1;
             int fd;
-            char *redirection_op = tokens[i]; // Store the redirection operator
-            if (strcmp(redirection_op, ">") == 0)
+            int saved_fd;
+            if (strcmp(tokens[i], ">") == 0)
             {
                 fd = open(tokens[i + 1], O_WRONLY | O_CREAT | O_TRUNC, 0644);
+                saved_fd = dup(STDOUT_FILENO);
                 dup2(fd, STDOUT_FILENO);
             }
             else
             {
                 fd = open(tokens[i + 1], O_WRONLY | O_CREAT | O_TRUNC, 0644);
+                saved_fd = dup(STDERR_FILENO);
                 dup2(fd, STDERR_FILENO);
             }
             close(fd);
 
-            i++; // Skip the next token (filename)
-        }
-        else
-        {
-            filtered_tokens[filtered_index++] = tokens[i];
+            tokens[i] = NULL;
+
+            if (execvp(tokens[0], tokens) < 0)
+            {
+                perror("myshell");
+                exit(EXIT_FAILURE);
+            }
+
+            dup2(saved_fd, (strcmp(tokens[i], ">") == 0) ? STDOUT_FILENO : STDERR_FILENO);
+            close(saved_fd);
         }
     }
-    filtered_tokens[filtered_index] = NULL;
-
-    // Update the tokens array
-    for (int i = 0; i <= filtered_index; i++)
-    {
-        tokens[i] = filtered_tokens[i];
-    }
-
-    return redirection_found;
 }
